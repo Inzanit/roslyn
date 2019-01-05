@@ -42,6 +42,8 @@ param (
     [switch]$prepareMachine,
     [switch]$useGlobalNuGetCache = $true,
     [switch]$warnAsError = $false,
+    [switch]$vsDropName = "",
+    [switch]$vsBranch = "",
 
     # Test actions
     [switch]$test32,
@@ -92,6 +94,10 @@ function Print-Usage() {
     Write-Host "  -prepareMachine           Prepare machine for CI run, clean up processes after build"
     Write-Host "  -useGlobalNuGetCache      Use global NuGet cache."
     Write-Host "  -warnAsError              Treat all warnings as errors"
+    Write-Host ""    
+    Write-Host "Official build settings:"
+    Write-Host "  -vsDropName               Visual Studio drop name"
+    Write-Host "  -vsBranch                 Visual Studio insertion branch"
     Write-Host ""
     Write-Host "Command line arguments starting with '/p:' are passed through to MSBuild."
 }
@@ -107,6 +113,16 @@ function Process-Arguments() {
     if ($help -or (($properties -ne $null) -and ($properties.Contains("/help") -or $properties.Contains("/?")))) {
        Print-Usage
        exit 0
+    }
+
+    if ($official -ne ($vsBranch -ne $null)) {
+        Write-Host "vsBranch must be specified for official builds"
+        exit 1
+    }
+
+    if ($official -ne ($vsDropName -ne $null)) {
+        Write-Host "vsDropName must be specified for official builds"
+        exit 1
     }
 
     if ($test32 -and $test64) {
@@ -182,30 +198,52 @@ function BuildSolution() {
         /p:QuietRestore=$quietRestore `
         /p:QuietRestoreBinaryLog=$binaryLog `
         /p:TestTargetFrameworks=$testTargetFrameworks `
+        /p:VisualStudioDropName=$vsDropName `
         /p:TreatWarningsAsErrors=true `
         $suppressExtensionDeployment `
         @properties
 }
 
 
-function Build-OptProfData() {
+function Build-OptProfData() {    
+    $insertionDir = Join-Path $VSSetupDir "Insertion"    
+    $optProfDir = Join-Path $ArtifactsDir "OptProf\$configuration"
+    $optProfDataDir = Join-Path $optProfDir "Data"
+    $optProfBranchDir = Join-Path $optProfDir "BranchInfo"
+    $optProfSettingsDir = Join-Path $insertionDir "RunSettings"
+
+    $optProfConfigFile = Join-Path $EngRoot "config\OptProf.json"    
     $optProfToolDir = Get-PackageDir "RoslynTools.OptProf"
     $optProfToolExe = Join-Path $optProfToolDir "tools\roslyn.optprof.exe"
-    $configFile = Join-Path $RepoRoot "eng\config\OptProf.json"
-    $insertionFolder = Join-Path $VSSetupDir "Insertion"
-    $outputFolder = Join-Path $ArtifactsDir "OptProf\$configuration"
-    $dataFolder = Join-Path $outputFolder "Data"
-    Write-Host "Generating optprof data using '$configFile' into '$dataFolder'"
-    $optProfArgs = "--configFile $configFile --insertionFolder $insertionFolder --outputFolder $dataFolder"
-    Exec-Console $optProfToolExe $optProfArgs
+    
+    Write-Host "Generating optimization data using '$optProfConfigFile' into '$optProfDataDir'"
+    Exec-Console $optProfToolExe "--configFile $optProfConfigFile --insertionFolder $insertionDir --outputFolder $optProfDataDir"
 
-    # Write Out Branch we are inserting into
-    $vsBranchFolder = Join-Path $outputFolder "BranchInfo"
-    New-Item -ItemType Directory -Force -Path $vsBranchFolder
-    $vsBranchText = Join-Path $vsBranchFolder "vsbranch.txt"
-    # InsertTargetBranchFullName is defined in .vsts-ci.yml
-    $vsBranch = $Env:InsertTargetBranchFullName
-    $vsBranch >> $vsBranchText
+    # Write out branch we are inserting into
+    Create-Directory $optProfBranchDir
+    $vsBranchFile = Join-Path $optProfBranchDir "vsbranch.txt"
+    $vsBranch >> $vsBranchFile
+    
+    $generatorToolDir = Get-PackageDir "Roslyn.OptProf.RunSettings.Generator"
+    $generatorToolExe = Join-Path $generatorToolDir "tools\roslyn.optprof.runsettings.generator.exe"
+        
+    Write-Host "Generating run settings for optimization data collection"
+    # https://github.com/dotnet/roslyn/issues/31486
+    $dest = Join-Path $RepoRoot ".vsts-ci.yml"
+    try {
+        Copy-Item (Join-Path $RepoRoot "azure-pipelines-official.yml") $dest
+        Exec-Console $generatorToolExe "--configFile $optProfConfigFile --outputFolder $optProfRunSettingsDir"
+    }
+    finally {
+        Remove-Item $dest
+    }
+
+    # Set VSO variables used by MicroBuildBuildVSBootstrapper pipeline task
+    $manifestList = [string]::Join(',', (Get-ChildItem "$insertionDir\*.vsman"))
+    $manifestUrl = "https://vsdrop.corp.microsoft.com/file/v1/$vsDropName"
+
+    Write-Host "##vso[task.setvariable variable=VisualStudio.SetupManifestList;]$manifestList"
+    Write-Host "##vso[task.setvariable variable=ManifestPublishUrl;]$manifestUrl"
 }
 
 # Core function for running our unit / integration tests tests
@@ -412,7 +450,7 @@ try {
         BuildSolution
     }
     
-    if ($build -and $pack -and $official) {
+    if ($official) {
         Build-OptProfData
     }
 
