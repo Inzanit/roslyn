@@ -43,7 +43,7 @@ param (
     [switch]$useGlobalNuGetCache = $true,
     [switch]$warnAsError = $false,
 
-    # official build settin
+    # official build setting
     [string]$vsDropName = "",
     [string]$vsBranch = "",
 
