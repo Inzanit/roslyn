@@ -42,8 +42,10 @@ param (
     [switch]$prepareMachine,
     [switch]$useGlobalNuGetCache = $true,
     [switch]$warnAsError = $false,
-    [switch]$vsDropName = "",
-    [switch]$vsBranch = "",
+
+    # official build settin
+    [string]$vsDropName = "",
+    [string]$vsBranch = "",
 
     # Test actions
     [switch]$test32,
@@ -115,16 +117,18 @@ function Process-Arguments() {
        exit 0
     }
 
-    if ($official -ne ($vsBranch -ne $null)) {
-        Write-Host "vsBranch must be specified for official builds"
-        exit 1
-    }
+    if ($official) {
+        if (!$vsBranch) {
+            Write-Host "vsBranch must be specified for official builds"
+            exit 1
+        }
 
-    if ($official -ne ($vsDropName -ne $null)) {
-        Write-Host "vsDropName must be specified for official builds"
-        exit 1
+        if (!$vsDropName) {
+            Write-Host "vsDropName must be specified for official builds"
+            exit 1
+        }
     }
-
+    
     if ($test32 -and $test64) {
         Write-Host "Cannot combine -test32 and -test64"
         exit 1
